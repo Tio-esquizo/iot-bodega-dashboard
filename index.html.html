@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dashboard IoT · Bodega refrigerada</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  :root {
+    --fondo: #f4f6f8; --tarjeta: #ffffff; --texto: #1c2733; --suave: #6b7a89;
+    --borde: #dde3e9; --ok: #1f9d55; --alerta: #d64545; --acento: #2563eb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --fondo: #0f1620; --tarjeta: #18222e; --texto: #e6edf3; --suave: #8b9aab;
+      --borde: #2a3746; --ok: #3ecf7a; --alerta: #ff6b6b; --acento: #6aa2ff;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--fondo); color: var(--texto);
+         font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { padding: 20px 24px 8px; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; align-items: baseline; }
+  h1 { margin: 0; font-size: 22px; }
+  #estado { font-size: 13px; color: var(--suave); }
+  #estado.error { color: var(--alerta); }
+  main { padding: 12px 24px 32px; display: grid; gap: 16px; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 16px; }
+  .tarjeta { background: var(--tarjeta); border: 1px solid var(--borde); border-radius: 12px; padding: 16px; }
+  .tarjeta h2 { margin: 0 0 6px; font-size: 13px; font-weight: 600; color: var(--suave); text-transform: uppercase; letter-spacing: .04em; }
+  .valor { font-size: 38px; font-weight: 700; line-height: 1.1; }
+  .valor small { font-size: 16px; font-weight: 500; color: var(--suave); margin-left: 4px; }
+  .rango { margin-top: 6px; font-size: 12px; color: var(--suave); }
+  .etiqueta { display: inline-block; margin-top: 8px; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; color: #fff; background: var(--ok); }
+  .fuera .valor { color: var(--alerta); }
+  .fuera .etiqueta { background: var(--alerta); }
+  .graficos { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+  .contenedor-grafico { position: relative; height: 240px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--borde); }
+  th { color: var(--suave); font-weight: 600; font-size: 12px; text-transform: uppercase; }
+  .vacio { color: var(--suave); padding: 12px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Bodega refrigerada · Monitoreo IoT</h1>
+  <div id="estado">Conectando…</div>
+</header>
+
+<main>
+  <section class="kpis">
+    <div class="tarjeta" id="tarjeta-temperatura">
+      <h2>Temperatura</h2>
+      <div class="valor"><span id="valor-temperatura">--</span><small>°C</small></div>
+      <div class="rango" id="rango-temperatura"></div>
+      <span class="etiqueta" id="etiqueta-temperatura">Sin datos</span>
+    </div>
+    <div class="tarjeta" id="tarjeta-humedad">
+      <h2>Humedad</h2>
+      <div class="valor"><span id="valor-humedad">--</span><small>%</small></div>
+      <div class="rango" id="rango-humedad"></div>
+      <span class="etiqueta" id="etiqueta-humedad">Sin datos</span>
+    </div>
+    <div class="tarjeta" id="tarjeta-voltaje">
+      <h2>Voltaje</h2>
+      <div class="valor"><span id="valor-voltaje">--</span><small>V</small></div>
+      <div class="rango" id="rango-voltaje"></div>
+      <span class="etiqueta" id="etiqueta-voltaje">Sin datos</span>
+    </div>
+    <div class="tarjeta" id="tarjeta-puerta">
+      <h2>Puerta</h2>
+      <div class="valor"><span id="valor-puerta">--</span></div>
+      <div class="rango">Estado del acceso principal</div>
+      <span class="etiqueta" id="etiqueta-puerta">Sin datos</span>
+    </div>
+  </section>
+
+  <section class="graficos">
+    <div class="tarjeta">
+      <h2>Temperatura (últimas lecturas)</h2>
+      <div class="contenedor-grafico"><canvas id="grafico-temperatura"></canvas></div>
+    </div>
+    <div class="tarjeta">
+      <h2>Humedad (últimas lecturas)</h2>
+      <div class="contenedor-grafico"><canvas id="grafico-humedad"></canvas></div>
+    </div>
+  </section>
+
+  <section class="tarjeta">
+    <h2>Acciones de control recientes</h2>
+    <table>
+      <thead><tr><th>Hora</th><th>Variable</th><th>Valor</th><th>Acción</th></tr></thead>
+      <tbody id="tabla-acciones"></tbody>
+    </table>
+    <div class="vacio" id="sin-acciones" hidden>Aún no se han ejecutado acciones de control.</div>
+  </section>
+</main>
+
+<script>
+  // ===== Configuración =====
+  const URL_SUPABASE = "https://imqxggiscnxxdehbvqcj.supabase.co";
+  const CLAVE_API = "sb_publishable_iWLCvn-MQXSwsYt0EStEGg_9ZBOS2QV";
+  const INTERVALO_MS = 5000;        // frecuencia de actualización del dashboard
+  const LECTURAS_A_TRAER = 300;     // cantidad de lecturas recientes que se consultan
+  const PUNTOS_POR_GRAFICO = 30;
+
+  const ENCABEZADOS = { apikey: CLAVE_API };
+
+  async function consultar(ruta) {
+    const respuesta = await fetch(`${URL_SUPABASE}/rest/v1/${ruta}`, { headers: ENCABEZADOS });
+    if (!respuesta.ok) throw new Error(`HTTP ${respuesta.status}`);
+    return respuesta.json();
+  }
+
+  // ===== Gráficos =====
+  function crearGrafico(idCanvas, color) {
+    return new Chart(document.getElementById(idCanvas), {
+      type: "line",
+      data: {
+        labels: [],
+        datasets: [
+          { label: "Lectura", data: [], borderColor: color, backgroundColor: color, tension: 0.25, pointRadius: 2 },
+          { label: "Máximo", data: [], borderColor: "#d64545", borderDash: [6, 4], pointRadius: 0, borderWidth: 1 },
+          { label: "Mínimo", data: [], borderColor: "#d64545", borderDash: [6, 4], pointRadius: 0, borderWidth: 1 },
+        ],
+      },
+      options: {
+        animation: false,
+        maintainAspectRatio: false,
+        plugins: { legend: { position: "bottom" } },
+        scales: { x: { ticks: { maxTicksLimit: 6 } } },
+      },
+    });
+  }
+
+  const graficos = {
+    temperatura: crearGrafico("grafico-temperatura", "#2563eb"),
+    humedad: crearGrafico("grafico-humedad", "#0d9488"),
+  };
+
+  function actualizarGrafico(variable, serie, umbral) {
+    const g = graficos[variable];
+    const datos = serie.slice(-PUNTOS_POR_GRAFICO);
+    g.data.labels = datos.map(l => new Date(l.creado_en).toLocaleTimeString("es-CL"));
+    g.data.datasets[0].data = datos.map(l => l.valor);
+    g.data.datasets[1].data = umbral ? datos.map(() => umbral.maximo) : [];
+    g.data.datasets[2].data = umbral ? datos.map(() => umbral.minimo) : [];
+    g.update();
+  }
+
+  // ===== Indicadores =====
+  function actualizarIndicador(variable, ultima, umbral) {
+    const tarjeta = document.getElementById(`tarjeta-${variable}`);
+    const etiqueta = document.getElementById(`etiqueta-${variable}`);
+    if (!ultima) return;
+
+    document.getElementById(`valor-${variable}`).textContent = ultima.valor.toFixed(1);
+    if (umbral) {
+      document.getElementById(`rango-${variable}`).textContent =
+        `Rango operativo: ${umbral.minimo} – ${umbral.maximo}`;
+      const fuera = ultima.valor < umbral.minimo || ultima.valor > umbral.maximo;
+      tarjeta.classList.toggle("fuera", fuera);
+      etiqueta.textContent = fuera ? "Fuera de rango" : "Normal";
+    }
+  }
+
+  function actualizarPuerta(ultima) {
+    const tarjeta = document.getElementById("tarjeta-puerta");
+    const etiqueta = document.getElementById("etiqueta-puerta");
+    if (!ultima) return;
+    const abierta = ultima.valor === 1;
+    document.getElementById("valor-puerta").textContent = abierta ? "Abierta" : "Cerrada";
+    tarjeta.classList.toggle("fuera", abierta);
+    etiqueta.textContent = abierta ? "Alarma activa" : "Normal";
+  }
+
+  function actualizarAcciones(acciones) {
+    const cuerpo = document.getElementById("tabla-acciones");
+    cuerpo.innerHTML = "";
+    document.getElementById("sin-acciones").hidden = acciones.length > 0;
+    acciones.forEach(a => {
+      const fila = document.createElement("tr");
+      [new Date(a.creado_en).toLocaleTimeString("es-CL"), a.variable, a.valor, a.accion]
+        .forEach(texto => {
+          const celda = document.createElement("td");
+          celda.textContent = texto;
+          fila.appendChild(celda);
+        });
+      cuerpo.appendChild(fila);
+    });
+  }
+
+  // ===== Ciclo principal =====
+  async function actualizar() {
+    const estado = document.getElementById("estado");
+    try {
+      const [lecturas, acciones, listaUmbrales] = await Promise.all([
+        consultar(`lecturas?select=variable,valor,creado_en&order=creado_en.desc&limit=${LECTURAS_A_TRAER}`),
+        consultar("acciones_control?select=*&order=creado_en.desc&limit=8"),
+        consultar("umbrales?select=*"),
+      ]);
+
+      const umbrales = {};
+      listaUmbrales.forEach(u => { umbrales[u.variable] = u; });
+
+      // Agrupar por variable (de la más antigua a la más reciente)
+      const porVariable = {};
+      lecturas.slice().reverse().forEach(l => {
+        (porVariable[l.variable] = porVariable[l.variable] || []).push(l);
+      });
+      const ultima = v => (porVariable[v] || []).slice(-1)[0];
+
+      ["temperatura", "humedad", "voltaje"].forEach(v =>
+        actualizarIndicador(v, ultima(v), umbrales[v]));
+      actualizarPuerta(ultima("puerta"));
+      ["temperatura", "humedad"].forEach(v =>
+        actualizarGrafico(v, porVariable[v] || [], umbrales[v]));
+      actualizarAcciones(acciones);
+
+      estado.classList.remove("error");
+      estado.textContent = `Conectado · actualizado ${new Date().toLocaleTimeString("es-CL")} (cada ${INTERVALO_MS / 1000} s)`;
+    } catch (error) {
+      estado.classList.add("error");
+      estado.textContent = `Error de conexión con Supabase (${error.message})`;
+    }
+  }
+
+  actualizar();
+  setInterval(actualizar, INTERVALO_MS);
+</script>
+</body>
+</html>
